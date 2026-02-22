@@ -22,7 +22,7 @@ const (
 	socketPath   = "/run/wgmkauth.sock"
 	wgInterface  = "wg0"
 	wgConfPath   = "/etc/wireguard/" + wgInterface + ".conf"
-	logFilePath  = "/var/log/wg-api2.log"
+	logFilePath  = "/var/log/wg-mkauthd.log"
 	groupName    = "wgmkauth"
 )
 
@@ -95,9 +95,16 @@ type ListClientsData struct {
 	Clients []Client `json:"clients"`
 }
 
+var showVersion = flag.Bool("version", false, "show daemon version and exit")
+
 func main() {
 	flag.Parse()
-	
+
+	if *showVersion {
+		fmt.Printf("wg-mkauthd %s\n", daemonVersion)
+		os.Exit(0)
+	}
+
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
