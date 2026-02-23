@@ -9,8 +9,9 @@ O **wg-mkauthd** surge da necessidade de um provisionamento **rápido, estável 
 Funciona como um **gateway de comunicação** entre o addon PHP do MK-AUTH e as ferramentas `wg` / `wg-quick`, traduzindo requisições JSON em comandos shell de forma segura e controlada.
 
 
-> **Fala JSON. Executa shell.**
-
+> **Escuta JSON. fala/exec shell.**
+> **Escuta shell. fala/entrega JSON.**
+> 
 ```text
   PHP (addon)                wg-mkauthd                 Kernel
  ┌───────────┐  JSON/sock  ┌────────────┐   shell   ┌─────────────┐
@@ -19,17 +20,6 @@ Funciona como um **gateway de comunicação** entre o addon PHP do MK-AUTH e as 
  └───────────┘  JSON/sock  └────────────┘           └─────────────┘
                            /run/wgmkauth.sock
 ```
-
-## O que faz
-
-- Escuta comandos via Unix socket (`/run/wgmkauth.sock`)
-- Gerencia `wg0.conf` (criar, remover, ativar/desativar peers)
-- Gera chaves WireGuard (PrivateKey, PublicKey, PresharedKey)
-- Executa `wg-quick up/down` de forma segura
-- Retorna sempre JSON estruturado para o addon PHP
-- Integrado ao addon WireGuard do MK-AUTH
-
-
 
 ## O que faz
 
