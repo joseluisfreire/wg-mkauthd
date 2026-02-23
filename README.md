@@ -1,12 +1,15 @@
 # wg-mkauthd
 
-Daemon Go para provisionamento WireGuard via MK-AUTH.
+Daemon Go para provisionamento de ramais Mikrotik no MK-AUTH via WireGuard VPN.
 
 ## Por que existe
 
-O **wg-mkauthd** surge da necessidade de um provisionamento **rápido, estável e seguro** de ramais MikroTik no sistema MK-AUTH — principalmente quando o sistema é executado em **VPS na nuvem**, onde o protocolo PPTP (GRE) é da idade da pedra lascada.
+O **wg-mkauthd** surge da necessidade de um provisionamento **rápido, estável e seguro** de ramais MikroTik no sistema MK-AUTH
+**PPTP é considerado obsoleto e inseguro** — criptografia fraca (MS-CHAPv2), sem suporte ativo e incompatível com ambientes modernos.
+   
+O **Daemon** resolve isso substituindo PPTP por **WireGuard**: moderno, rápido, seguro e funciona em qualquer VPS com uma única porta UDP.
 
-Funciona como um **gateway de comunicação** entre o addon PHP do MK-AUTH e as ferramentas `wg` / `wg-quick`, traduzindo requisições JSON em comandos shell de forma segura e controlada.
+Atua como um **gateway de comunicação** entre o addon PHP do MK-AUTH e as ferramentas `wg` / `wg-quick`, traduzindo requisições JSON em comandos shell de forma segura e controlada.
 
 
 > **Escuta JSON. fala/exec shell.**
