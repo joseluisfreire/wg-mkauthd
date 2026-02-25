@@ -2,10 +2,10 @@
 package main
 
 import (
+	"flag"
 	"bufio"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -18,19 +18,19 @@ import (
 )
 
 const (
-	daemonVersion = "v1.0.1" // Atualizado para marcar a blindagem
-	socketPath    = "/run/wgmkauth.sock"
-	wgInterface   = "wg0"
-	wgConfPath    = "/etc/wireguard/" + wgInterface + ".conf"
-	logFilePath   = "/var/log/wg-mkauthd.log"
-	groupName     = "wgmkauth"
+	daemonVersion = "v1.0.2"
+	socketPath   = "/run/wgmkauth.sock"
+	wgInterface  = "wg0"
+	wgConfPath   = "/etc/wireguard/" + wgInterface + ".conf"
+	logFilePath  = "/var/log/wg-mkauthd.log"
+	groupName    = "wgmkauth"
 )
 
 var daemonStartedAt time.Time
 var (
-	cfgPath       = flag.String("config", "/etc/wg-mkauthd.cfg", "config file")
-	autoBringUp   = flag.Bool("auto-bring-up", false, "run wg-quick up on start")
-	autoBringDown = flag.Bool("auto-bring-down", false, "run wg-quick down on shutdown")
+    cfgPath       = flag.String("config", "/etc/wg-mkauthd.cfg", "config file")
+    autoBringUp   = flag.Bool("auto-bring-up", false, "run wg-quick up on start")
+    autoBringDown = flag.Bool("auto-bring-down", false, "run wg-quick down on shutdown")
 )
 
 type Request struct {
@@ -42,9 +42,10 @@ type Request struct {
 	PresharedKey        string `json:"presharedKey,omitempty"`
 	PersistentKeepalive int    `json:"persistentKeepalive,omitempty"`
 	ApplyRuntime        *bool  `json:"applyRuntime,omitempty"`
-	WGPort              int    `json:"wgPort,omitempty"`
-	WGIPv4              string `json:"wgIPv4,omitempty"`
-	Conf                string `json:"conf,omitempty"`
+	WGPort 				int    `json:"wgPort,omitempty"`
+	WGIPv4 				string `json:"wgIPv4,omitempty"`
+	Conf   				string `json:"conf,omitempty"`
+	Endpoint            string `json:"endpoint,omitempty"`
 }
 
 type Response struct {
@@ -84,11 +85,11 @@ type Client struct {
 }
 
 type VersionData struct {
-	DaemonVersion      string `json:"daemonVersion"`
-	WgVersion          string `json:"wgVersion"`
-	SocketPath         string `json:"socketPath"`
-	DaemonStartedAt    string `json:"daemonStartedAt,omitempty"`
-	KernelHasWireguard bool   `json:"kernelHasWireguard"`
+    DaemonVersion     string `json:"daemonVersion"`
+    WgVersion         string `json:"wgVersion"`
+    SocketPath        string `json:"socketPath"`
+    DaemonStartedAt   string `json:"daemonStartedAt,omitempty"`
+    KernelHasWireguard bool   `json:"kernelHasWireguard"`
 }
 
 type ListClientsData struct {
@@ -112,34 +113,34 @@ func main() {
 }
 
 func run() error {
-	_ = os.Remove(socketPath)
+    _ = os.Remove(socketPath)
 
-	l, err := net.Listen("unix", socketPath)
-	if err != nil {
-		return fmt.Errorf("listen unix: %w", err)
-	}
+    l, err := net.Listen("unix", socketPath)
+    if err != nil {
+        return fmt.Errorf("listen unix: %w", err)
+    }
+    
+    if err := fixSocketPerms(socketPath); err != nil {
+        return fmt.Errorf("fix perms: %w", err)
+    }
 
-	if err := fixSocketPerms(socketPath); err != nil {
-		return fmt.Errorf("fix perms: %w", err)
-	}
+    logInfo("wg-mkauthd started, listening on " + socketPath)
+    daemonStartedAt = time.Now()
 
-	logInfo("wg-mkauthd started, listening on " + socketPath)
-	daemonStartedAt = time.Now()
-
-	// autoBringUp: tentar subir interface no start
-	if *autoBringUp {
-		if !wgIsUp() {
-			cmd := exec.Command("wg-quick", "up", wgInterface)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				logError(fmt.Sprintf("autoBringUp failed: %v out=%s", err, string(out)))
-			} else {
-				logInfo("autoBringUp: interface " + wgInterface + " is up")
-			}
-		} else {
-			logInfo("autoBringUp: interface " + wgInterface + " already up")
-		}
-	}
+    // autoBringUp: tentar subir interface no start
+    if *autoBringUp {
+        if !wgIsUp() {
+            cmd := exec.Command("wg-quick", "up", wgInterface)
+            out, err := cmd.CombinedOutput()
+            if err != nil {
+                logError(fmt.Sprintf("autoBringUp failed: %v out=%s", err, string(out)))
+            } else {
+                logInfo("autoBringUp: interface " + wgInterface + " is up")
+            }
+        } else {
+            logInfo("autoBringUp: interface " + wgInterface + " already up")
+        }
+    }
 
 	// graceful shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -236,6 +237,7 @@ func handleConn(conn net.Conn) {
 	r := bufio.NewReader(conn)
 	line, err := r.ReadBytes('\n')
 	if err != nil {
+		// cliente fechou ou erro de leitura
 		return
 	}
 	raw := strings.TrimSpace(string(line))
@@ -298,7 +300,7 @@ func dispatch(req Request) Response {
 	case "server-reset":
 		return handleServerReset(req)
 	case "restore-wg-conf":
-		return handleRestoreWgConf(req)
+		return handleRestoreWgConf(req)	
 	default:
 		return Response{OK: false, Error: "invalid_action", Message: "Unknown action: " + req.Action}
 	}
@@ -334,7 +336,7 @@ func handleStatus() Response {
 	port := extractListeningPort(wgTxt)
 	pubIP := firstHostIP()
 	wgAddr := readWgAddressFromConf()
-
+	
 	data := StatusData{
 		Interface: wgInterface,
 		PublicIP:  pubIP,
@@ -345,7 +347,6 @@ func handleStatus() Response {
 	}
 	return Response{OK: true, Data: data}
 }
-
 // ----------------------------------------------------------------------------
 // Server Interface control: wg-quick up/down
 // ----------------------------------------------------------------------------
@@ -432,10 +433,12 @@ func handleServerGetConfig() Response {
 			continue
 		}
 		if strings.HasPrefix(t, "[") {
+			// novo bloco
 			if strings.EqualFold(t, "[Interface]") {
 				inInterface = true
 				continue
 			}
+			// saiu da interface
 			if inInterface {
 				break
 			}
@@ -486,6 +489,7 @@ func handleServerGetConfig() Response {
 }
 
 func handleServerReset(req Request) Response {
+	// derruba interface antes de mexer no conf
 	if wgIsUp() {
 		cmd := exec.Command("wg-quick", "down", wgInterface)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -498,6 +502,7 @@ func handleServerReset(req Request) Response {
 		}
 	}
 
+	// tenta reaproveitar porta atual, se possível
 	currentPort := 0
 	if txt, err := wgShowText(); err == nil {
 		currentPort = extractListeningPort(txt)
@@ -512,14 +517,16 @@ func handleServerReset(req Request) Response {
 		}
 	}
 
+	// defaults de address (poderíamos receber por req.Address depois)
 	wgIPv4 := strings.TrimSpace(req.WGIPv4)
 	if wgIPv4 == "" {
-		wgIPv4 = strings.TrimSpace(req.Address) // compat
+		wgIPv4 = strings.TrimSpace(req.Address) // compat com chamadas antigas
 	}
 	if wgIPv4 == "" {
-		wgIPv4 = "10.66.66.1/24" // default
+		wgIPv4 = "10.66.66.1/24" // default final
 	}
 
+	// gera nova key do servidor
 	priv, pub, err := genKeypair()
 	if err != nil {
 		logError("server-reset genKeypair: " + err.Error())
@@ -530,9 +537,11 @@ func handleServerReset(req Request) Response {
 		}
 	}
 
+	// interface pública do host (para PostUp/PostDown)
 	pubNIC := firstHostNic()
 
 	conf := buildServerConfFromDefaults(priv, wgIPv4, "", port, pubNIC)
+	// escreve wg0.conf novo
 	if err := os.WriteFile(wgConfPath, []byte(conf), 0o600); err != nil {
 		logError("server-reset write wgConfPath: " + err.Error())
 		return Response{
@@ -542,6 +551,7 @@ func handleServerReset(req Request) Response {
 		}
 	}
 
+	// sobe interface com novo conf
 	cmdUp := exec.Command("wg-quick", "up", wgInterface)
 	if out, err := cmdUp.CombinedOutput(); err != nil {
 		logError(fmt.Sprintf("server-reset wg-quick up failed: %v out=%s", err, string(out)))
@@ -574,88 +584,95 @@ func handleServerReset(req Request) Response {
 // ============================================================================
 
 func handleRestoreWgConf(req Request) Response {
-	conf := strings.TrimSpace(req.Conf)
-	if conf == "" {
-		return Response{
-			OK:      false,
-			Error:   "missing_conf",
-			Message: "Field 'conf' is required for restore-wg-conf",
-		}
-	}
+    conf := strings.TrimSpace(req.Conf)
+    if conf == "" {
+        return Response{
+            OK:      false,
+            Error:   "missing_conf",
+            Message: "Field 'conf' is required for restore-wg-conf",
+        }
+    }
 
-	if wgIsUp() {
-		cmd := exec.Command("wg-quick", "down", wgInterface)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			logError(fmt.Sprintf("restore-wg-conf: wg-quick down failed: %v out=%s", err, string(out)))
-			return Response{
-				OK:      false,
-				Error:   "wg_quick_down_failed",
-				Message: "Failed to bring interface down before restore",
-			}
-		}
-	}
+    // 1. Derruba a interface (se estiver up)
+    if wgIsUp() {
+        cmd := exec.Command("wg-quick", "down", wgInterface)
+        if out, err := cmd.CombinedOutput(); err != nil {
+            logError(fmt.Sprintf("restore-wg-conf: wg-quick down failed: %v out=%s", err, string(out)))
+            return Response{
+                OK:      false,
+                Error:   "wg_quick_down_failed",
+                Message: "Failed to bring interface down before restore",
+            }
+        }
+    }
 
-	if err := os.WriteFile(wgConfPath, []byte(conf), 0o600); err != nil {
-		logError("restore-wg-conf: write failed: " + err.Error())
-		return Response{
-			OK:      false,
-			Error:   "conf_write_failed",
-			Message: "Failed to write wg0.conf: " + err.Error(),
-		}
-	}
+    // 2. Escreve o conf
+    if err := os.WriteFile(wgConfPath, []byte(conf), 0o600); err != nil {
+        logError("restore-wg-conf: write failed: " + err.Error())
+        return Response{
+            OK:      false,
+            Error:   "conf_write_failed",
+            Message: "Failed to write wg0.conf: " + err.Error(),
+        }
+    }
 
-	cmdUp := exec.Command("wg-quick", "up", wgInterface)
-	if out, err := cmdUp.CombinedOutput(); err != nil {
-		logError(fmt.Sprintf("restore-wg-conf: wg-quick up failed: %v out=%s", err, string(out)))
-		return Response{
-			OK:      false,
-			Error:   "wg_quick_up_failed",
-			Message: "Failed to bring interface up after restore: " + string(out),
-		}
-	}
+    // 3. Sobe a interface
+    cmdUp := exec.Command("wg-quick", "up", wgInterface)
+    if out, err := cmdUp.CombinedOutput(); err != nil {
+        logError(fmt.Sprintf("restore-wg-conf: wg-quick up failed: %v out=%s", err, string(out)))
+        return Response{
+            OK:      false,
+            Error:   "wg_quick_up_failed",
+            Message: "Failed to bring interface up after restore: " + string(out),
+        }
+    }
 
-	logInfo("restore-wg-conf: wg0.conf restored and interface up")
-	return Response{
-		OK:      true,
-		Message: "wg0.conf restored successfully, interface is up",
-	}
+    logInfo("restore-wg-conf: wg0.conf restored and interface up")
+    return Response{
+        OK:      true,
+        Message: "wg0.conf restored successfully, interface is up",
+    }
 }
 
 func handleServerCreate(req Request) Response {
-	if _, err := os.Stat(wgConfPath); err == nil {
-		return Response{
-			OK:      false,
-			Error:   "already_initialized",
-			Message: "wg0.conf already exists; use server-reset to recreate",
-		}
-	}
+    // se conf já existe, não cria de novo (evita destruir peers)
+    if _, err := os.Stat(wgConfPath); err == nil {
+        return Response{
+            OK:      false,
+            Error:   "already_initialized",
+            Message: "wg0.conf already exists; use server-reset to recreate",
+        }
+    }
 
-	port := req.WGPort
-	if port <= 0 {
-		port = 51820
-	}
+    // porta
+    port := req.WGPort
+    if port <= 0 {
+        port = 51820
+    }
 
-	wgIPv4 := strings.TrimSpace(req.WGIPv4)
-	if wgIPv4 == "" {
-		wgIPv4 = "10.66.66.1/24"
-	}
+    // ipv4
+    wgIPv4 := strings.TrimSpace(req.WGIPv4)
+    if wgIPv4 == "" {
+        wgIPv4 = "10.66.66.1/24"
+    }
+    
+    priv, pub, err := genKeypair()
+    if err != nil {
+        return Response{OK: false, Error: "keygen_failed", Message: "Failed to generate server keypair"}
+    }
 
-	priv, pub, err := genKeypair()
-	if err != nil {
-		return Response{OK: false, Error: "keygen_failed", Message: "Failed to generate server keypair"}
-	}
-
-	pubNIC := firstHostNic()
+    pubNIC := firstHostNic()
 	conf := buildServerConfFromDefaults(priv, wgIPv4, "", port, pubNIC)
-	if err := os.WriteFile(wgConfPath, []byte(conf), 0o600); err != nil {
-		return Response{OK: false, Error: "conf_write_failed", Message: "Failed to write new wg config"}
-	}
+    if err := os.WriteFile(wgConfPath, []byte(conf), 0o600); err != nil {
+        return Response{OK: false, Error: "conf_write_failed", Message: "Failed to write new wg config"}
+    }
 
-	cmdUp := exec.Command("wg-quick", "up", wgInterface)
-	if out, err := cmdUp.CombinedOutput(); err != nil {
-		logError(fmt.Sprintf("server-create wg-quick up failed: %v out=%s", err, string(out)))
-		return Response{OK: false, Error: "wg_quick_up_failed", Message: "Failed to bring interface up"}
-	}
+    // sobe
+    cmdUp := exec.Command("wg-quick", "up", wgInterface)
+    if out, err := cmdUp.CombinedOutput(); err != nil {
+        logError(fmt.Sprintf("server-create wg-quick up failed: %v out=%s", err, string(out)))
+        return Response{OK: false, Error: "wg_quick_up_failed", Message: "Failed to bring interface up"}
+    }
 
 	return Response{
 		OK:      true,
@@ -674,29 +691,30 @@ func handleServerCreate(req Request) Response {
 // ----------------------------------------------------------------------------
 
 func handleVersion() Response {
-	wgVer := strings.TrimSpace(runCmdVersion("wg", "--version"))
+    wgVer := strings.TrimSpace(runCmdVersion("wg", "--version"))
 
-	lsmodOut := runCmdVersion("sh", "-c", "lsmod | grep -w wireguard || true")
-	hasKernel := strings.TrimSpace(lsmodOut) != ""
+    // testa se o módulo wireguard está carregado (simples lsmod)
+    lsmodOut := runCmdVersion("sh", "-c", "lsmod | grep -w wireguard || true")
+    hasKernel := strings.TrimSpace(lsmodOut) != ""
 
-	data := VersionData{
-		DaemonVersion:      daemonVersion,
-		WgVersion:          wgVer,
-		SocketPath:         socketPath,
-		DaemonStartedAt:    daemonStartedAt.Format(time.RFC3339),
-		KernelHasWireguard: hasKernel,
-	}
-	return Response{OK: true, Data: data}
+    data := VersionData{
+        DaemonVersion:      daemonVersion,
+        WgVersion:          wgVer,
+        SocketPath:         socketPath,
+        DaemonStartedAt:    daemonStartedAt.Format(time.RFC3339),
+        KernelHasWireguard: hasKernel,
+    }
+    return Response{OK: true, Data: data}
 }
 
 func runCmdVersion(bin string, args ...string) string {
-	cmd := exec.Command(bin, args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		logError(fmt.Sprintf("version: %s %v failed: %v out=%s", bin, args, err, string(out)))
-		return ""
-	}
-	return string(out)
+    cmd := exec.Command(bin, args...)
+    out, err := cmd.CombinedOutput()
+    if err != nil {
+        logError(fmt.Sprintf("version: %s %v failed: %v out=%s", bin, args, err, string(out)))
+        return ""
+    }
+    return string(out)
 }
 
 func handleListClients() Response {
@@ -708,7 +726,7 @@ func handleListClients() Response {
 	return Response{OK: true, Data: ListClientsData{Clients: clients}}
 }
 
-// create Client
+//create Client
 type CreateClientData struct {
 	ID                  string `json:"id"`
 	Name                string `json:"name"`
@@ -725,91 +743,121 @@ const (
 )
 
 func handleCreateClient(req Request) Response {
-	name := strings.TrimSpace(req.Name)
-	addr := strings.TrimSpace(req.Address)
+    name := strings.TrimSpace(req.Name)
+    addr := strings.TrimSpace(req.Address)
 
-	if name == "" {
-		return Response{
-			OK:      false,
-			Error:   "missing_name",
-			Message: `Field "name" is required for create-client`,
-		}
-	}
-	if addr == "" {
-		return Response{
-			OK:      false,
-			Error:   "missing_address",
-			Message: `Field "address" is required for create-client`,
-		}
-	}
+    if name == "" {
+        return Response{
+            OK:      false,
+            Error:   "missing_name",
+            Message: `Field "name" is required for create-client`,
+        }
+    }
+    if addr == "" {
+        return Response{
+            OK:      false,
+            Error:   "missing_address",
+            Message: `Field "address" is required for create-client`,
+        }
+    }
 
-	priv, pub, err := genKeypair()
-	if err != nil {
-		logError("create-client genKeypair: " + err.Error())
-		return Response{
-			OK:      false,
-			Error:   "keygen_failed",
-			Message: "Failed to generate WireGuard keypair",
-		}
-	}
+    priv, pub, err := genKeypair()
+    if err != nil {
+        logError("create-client genKeypair: " + err.Error())
+        return Response{
+            OK:      false,
+            Error:   "keygen_failed",
+            Message: "Failed to generate WireGuard keypair",
+        }
+    }
 
-	psk, err := genPresharedKey()
-	if err != nil {
-		logError("create-client genPresharedKey: " + err.Error())
-		return Response{
-			OK:      false,
-			Error:   "psk_failed",
-			Message: "Failed to generate preshared key",
-		}
-	}
+    psk, err := genPresharedKey()
+    if err != nil {
+        logError("create-client genPresharedKey: " + err.Error())
+        return Response{
+            OK:      false,
+            Error:   "psk_failed",
+            Message: "Failed to generate preshared key",
+        }
+    }
 
-	serverIP := getServerIPv4FromConf()
+    // pega IP v4 do servidor a partir do wg0.conf
+    serverIP := getServerIPv4FromConf()
+    
+    // --- INÍCIO DA BLINDAGEM ---
+    // Limpa qualquer lixo que o PHP tenha mandado junto com o IP do cliente
+    cleanAddr := sanitizeAllowedIPs(addr, serverIP)
+    
+	// 1) Allowed usado no runtime/conf: SÓ O IP LIMPO DO CLIENTE
+    allowedRuntime := cleanAddr
+    
+	// AllowedIPs: o JSON que volta pro PHP pode levar o duplo (como ele espera) ou o limpo.
+    // Vamos manter a sua lógica original de devolver duplo pro JSON, mas o runtime/conf usa o limpo.
+    allowed := cleanAddr
+    if serverIP != "" {
+        allowed = fmt.Sprintf("%s/32,%s", serverIP, cleanAddr)
+    }
+    // --- FIM DA BLINDAGEM ---
+    // wg set wg0 peer <pub> preshared-key <psk> allowed-ips <allowed>
+    cmd := exec.Command(
+        "wg", "set", wgInterface,
+        "peer", pub,
+        "preshared-key", "/dev/stdin",
+        "allowed-ips", allowedRuntime,
+    )
+    cmd.Stdin = strings.NewReader(psk + "\n")
+    if out, err := cmd.CombinedOutput(); err != nil {
+        logError("create-client wg set failed: " + err.Error() + " out=" + string(out))
+        return Response{
+            OK:      false,
+            Error:   "wg_set_failed",
+            Message: "Failed to add peer to interface " + wgInterface,
+        }
+    }
 
-	// 1) Allowed usado no runtime/conf: SÓ O ADDRESS DO CLIENTE
-	// A gente passa pelo sanitize para garantir (Blindagem)
-	allowedRuntime := sanitizeAllowedIPs(addr)
+    logInfo(fmt.Sprintf("create-client name='%s' addr='%s' pub='%s' allowed='%s'", name, addr, pub, allowed))
 
-	// AllowedIPs: pro PHP gerar o cliente Mikrotik
-	allowed := addr
-	if serverIP != "" {
-		allowed = fmt.Sprintf("%s/32,%s", serverIP, addr)
-	}
+    if err := appendClientToConf(name, pub, psk, allowedRuntime); err != nil {
+        logError("create-client appendClientToConf: " + err.Error())
+    }
 
-	cmd := exec.Command(
-		"wg", "set", wgInterface,
-		"peer", pub,
-		"preshared-key", "/dev/stdin",
-		"allowed-ips", allowedRuntime,
-	)
-	cmd.Stdin = strings.NewReader(psk + "\n")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		logError("create-client wg set failed: " + err.Error() + " out=" + string(out))
-		return Response{
-			OK:      false,
-			Error:   "wg_set_failed",
-			Message: "Failed to add peer to interface " + wgInterface,
-		}
-	}
+    // monta config do client
+    serverPub, err := cmdGetServerPublicKey()
+    if err != nil {
+        logError("create-client get server pubkey: " + err.Error())
+        return Response{
+            OK:      false,
+            Error:   "server_pub_failed",
+            Message: "Failed to get server public key",
+        }
+    }
 
-	logInfo(fmt.Sprintf("create-client name='%s' addr='%s' pub='%s' allowedRuntime='%s'", name, addr, pub, allowedRuntime))
+    // --- INÍCIO DA LÓGICA DE ENDPOINT (MANUAL VS AUTO) ---
+    var endpoint string
+    reqEndpoint := strings.TrimSpace(req.Endpoint)
+    
+    if reqEndpoint != "" {
+        // Se o PHP mandou um IP/Domínio manual do banco (ex: "200.20.20.5" ou "vpn.provedor.com")
+        // Vamos anexar a porta do servidor, caso o PHP não tenha mandado a porta junto.
+        if strings.Contains(reqEndpoint, ":") {
+            endpoint = reqEndpoint // Já veio com porta (ex: ip:51820)
+        } else {
+            // Descobre a porta que o wg0 está usando agora
+            port := 51820
+            if txt, err := wgShowText(); err == nil {
+                if p := extractListeningPort(txt); p > 0 {
+                    port = p
+                }
+            }
+            endpoint = fmt.Sprintf("%s:%d", reqEndpoint, port)
+        }
+    } else {
+        // Se o PHP mandou vazio, usa a redundância automática (curl)
+        endpoint = getCurrentEndpoint()
+    }
+    // --- FIM DA LÓGICA DE ENDPOINT ---
 
-	if err := appendClientToConf(name, pub, psk, allowedRuntime); err != nil {
-		logError("create-client appendClientToConf: " + err.Error())
-	}
-
-	serverPub, err := cmdGetServerPublicKey()
-	if err != nil {
-		logError("create-client get server pubkey: " + err.Error())
-		return Response{
-			OK:      false,
-			Error:   "server_pub_failed",
-			Message: "Failed to get server public key",
-		}
-	}
-
-	endpoint := getCurrentEndpoint()
-
-	cfg := fmt.Sprintf(`[Interface]
+    cfg := fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = %s
 
@@ -821,24 +869,24 @@ AllowedIPs = %s
 PersistentKeepalive = %d
 `, priv, addr, serverPub, psk, endpoint, allowed, defaultKeepalive)
 
-	cfgJson := strings.ReplaceAll(cfg, "\r", "")
-	cfgJson = strings.ReplaceAll(cfgJson, "\n", "\\n")
+    cfgJson := strings.ReplaceAll(cfg, "\r", "")
+    cfgJson = strings.ReplaceAll(cfgJson, "\n", "\\n")
 
-	data := CreateClientData{
-		ID:                  pub,
-		Name:                name,
-		Address:             addr,
-		PublicKey:           pub,
-		PresharedKey:        psk,
-		AllowedIPs:          allowed,
-		PersistentKeepalive: defaultKeepalive,
-		Config:              cfgJson,
-	}
+    data := CreateClientData{
+        ID:                  pub,
+        Name:                name,
+        Address:             addr,
+        PublicKey:           pub,
+        PresharedKey:        psk,
+        AllowedIPs:          allowed,
+        PersistentKeepalive: defaultKeepalive,
+        Config:              cfgJson,
+    }
 
-	return Response{
-		OK:   true,
-		Data: data,
-	}
+    return Response{
+        OK:   true,
+        Data: data,
+    }
 }
 
 func cmdGetServerPublicKey() (string, error) {
@@ -848,8 +896,7 @@ func cmdGetServerPublicKey() (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
-
-// delete client
+//delete client
 func handleDeleteClient(req Request) Response {
 	pub := strings.TrimSpace(req.PublicKey)
 	if pub == "" {
@@ -861,6 +908,7 @@ func handleDeleteClient(req Request) Response {
 		}
 	}
 
+	// valida formato básico, igual shell (base64)
 	if !isValidPublicKey(pub) {
 		logError(fmt.Sprintf("delete-client invalid_publicKey pub=%q", pub))
 		return Response{
@@ -870,9 +918,11 @@ func handleDeleteClient(req Request) Response {
 		}
 	}
 
+	// 1) Remove do runtime se existir (wg show wg0 dump ...)
 	peers, err := wgShowPeers()
 	if err != nil {
 		logError("delete-client wg_show_failed: " + err.Error())
+		// segue adiante pra tentar mexer no conf mesmo assim, igual shell
 	}
 
 	if peers[pub] {
@@ -889,8 +939,10 @@ func handleDeleteClient(req Request) Response {
 		logInfo("delete-client runtime-peer-not-found pub='" + pub + "'")
 	}
 
+	// 2) Remove do arquivo de configuração, espelhando o sed/awk do shell
 	if err := deletePeerFromConf(pub); err != nil {
 		logError("delete-client conf-remove-error pub='" + pub + "' err=" + err.Error())
+		// shell loga erro mas ainda responde ok; vamos seguir igual
 	}
 
 	return Response{
@@ -901,7 +953,7 @@ func handleDeleteClient(req Request) Response {
 	}
 }
 
-// disable Client
+//disable Client
 func handleDisableClient(req Request) Response {
 	pub := strings.TrimSpace(req.PublicKey)
 	if pub == "" {
@@ -921,6 +973,7 @@ func handleDisableClient(req Request) Response {
 		}
 	}
 
+	// 1) runtime: zerar AllowedIPs -> (none)
 	cmd := exec.Command("wg", "set", wgInterface, "peer", pub, "allowed-ips", "")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		logError("disable-client wg set failed: " + err.Error() + " out=" + string(out))
@@ -932,6 +985,7 @@ func handleDisableClient(req Request) Response {
 	}
 	logInfo("disable-client runtime-updated pub='" + pub + "' allowed-ips=\"\"")
 
+	// 2) conf: usar a mesma janela do awk para trocar AllowedIPs
 	if err := setAllowedIPsWindow(pub, ""); err != nil {
 		logError("disable-client conf-setAllowedIPsWindow pub='" + pub + "' err=" + err.Error())
 	}
@@ -944,17 +998,18 @@ func handleDisableClient(req Request) Response {
 	}
 }
 
-// enable Client
+//enable Client
 func handleEnableClient(req Request) Response {
 	pub := strings.TrimSpace(req.PublicKey)
-	allowedRaw := strings.TrimSpace(req.AllowedIPs)
+	allowed := strings.TrimSpace(req.AllowedIPs)
 
-	if pub == "" || allowedRaw == "" {
-		logError(fmt.Sprintf("enable-client missing_fields pub=%q allowedRaw=%q", pub, allowedRaw))
+	if pub == "" || allowed == "" {
+		logError(fmt.Sprintf("enable-client missing_fields pub=%q allowed=%q", pub, allowed))
 		return Response{
 			OK:    false,
 			Error: "missing_fields",
-			Message: `Fields "publicKey" and "allowedIPs" are required for enable-client`,
+			Message: `Fields "publicKey" and "allowedIPs" are required for ` +
+				"enable-client",
 		}
 	}
 	if !isValidPublicKey(pub) {
@@ -965,12 +1020,12 @@ func handleEnableClient(req Request) Response {
 			Message: `Field "publicKey" has invalid format`,
 		}
 	}
-
-	// BLINDAGEM NÍVEL 2: Limpa o IP do servidor da string enviada pelo PHP
-	allowedRuntime := sanitizeAllowedIPs(allowedRaw)
-
-	// 1) runtime: reaplicar allowed-ips limpo (+ psk se vier)
-	args := []string{"set", wgInterface, "peer", pub, "allowed-ips", allowedRuntime}
+    // --- INÍCIO DA BLINDAGEM ---
+    serverIP := getServerIPv4FromConf()
+    allowed = sanitizeAllowedIPs(allowed, serverIP)
+    // --- FIM DA BLINDAGEM ---
+	// 1) runtime: reaplicar allowed-ips (+ psk se vier)
+	args := []string{"set", wgInterface, "peer", pub, "allowed-ips", allowed}
 	var stdinStr string
 	if strings.TrimSpace(req.PresharedKey) != "" {
 		args = append(args, "preshared-key", "/dev/stdin")
@@ -990,14 +1045,14 @@ func handleEnableClient(req Request) Response {
 			Message: "Failed to enable peer on " + wgInterface,
 		}
 	}
-	logInfo(fmt.Sprintf("enable-client runtime-updated pub='%s' allowed='%s'", pub, allowedRuntime))
+	logInfo(fmt.Sprintf("enable-client runtime-updated pub='%s' allowed='%s'", pub, allowed))
 
-	// 2) conf: mesma janela do awk para AllowedIPs limpo
-	if err := setAllowedIPsWindow(pub, allowedRuntime); err != nil {
+	// 2) conf: mesma janela do awk para AllowedIPs
+	if err := setAllowedIPsWindow(pub, allowed); err != nil {
 		logError("enable-client conf-setAllowedIPsWindow pub='" + pub + "' err=" + err.Error())
 	}
 
-	// 3) conf: se vier psk, atualiza
+	// 3) conf: se vier psk, atualiza PresharedKey dentro da mesma janela
 	if strings.TrimSpace(req.PresharedKey) != "" {
 		if err := setPresharedKeyWindow(pub, strings.TrimSpace(req.PresharedKey)); err != nil {
 			logError("enable-client conf-setPresharedKeyWindow pub='" + pub + "' err=" + err.Error())
@@ -1014,135 +1069,135 @@ func handleEnableClient(req Request) Response {
 
 // update-client-address
 func handleUpdateClientAddress(req Request) Response {
-	pub := strings.TrimSpace(req.PublicKey)
-	clientAddrRaw := strings.TrimSpace(req.AllowedIPs)
+    pub := strings.TrimSpace(req.PublicKey)
+    clientAddr := strings.TrimSpace(req.AllowedIPs) // ex: 10.66.66.84/32
 
-	if pub == "" || clientAddrRaw == "" {
-		logError(fmt.Sprintf("update-client-address: missing_fields pub=%q addr=%q", pub, clientAddrRaw))
-		return Response{
-			OK:      false,
-			Error:   "missing_fields",
-			Message: "Fields publicKey and allowedIPs are required for update-client-address",
-		}
-	}
-	if !isValidPublicKey(pub) {
-		logError(fmt.Sprintf("update-client-address: invalid_publicKey %q", pub))
-		return Response{
-			OK:      false,
-			Error:   "invalid_publicKey",
-			Message: "Field publicKey has invalid format",
-		}
-	}
+    if pub == "" || clientAddr == "" {
+        logError(fmt.Sprintf("update-client-address: missing_fields pub=%q addr=%q", pub, clientAddr))
+        return Response{
+            OK:      false,
+            Error:   "missing_fields",
+            Message: "Fields publicKey and allowedIPs (client address) are required for update-client-address",
+        }
+    }
+    if !isValidPublicKey(pub) {
+        logError(fmt.Sprintf("update-client-address: invalid_publicKey %q", pub))
+        return Response{
+            OK:      false,
+            Error:   "invalid_publicKey",
+            Message: "Field publicKey has invalid format",
+        }
+    }
+    // --- INÍCIO DA BLINDAGEM ---
+    serverIP := getServerIPv4FromConf()
+    clientAddr = sanitizeAllowedIPs(clientAddr, serverIP)
+    // --- FIM DA BLINDAGEM ---
+    // 1) runtime/conf: só o /32 do cliente
+    allowedRuntime := clientAddr
 
-	// BLINDAGEM NÍVEL 2: Limpa o IP do servidor, caso o PHP tenha mandado lixo
-	allowedRuntime := sanitizeAllowedIPs(clientAddrRaw)
+    cmd := exec.Command("wg", "set", wgInterface, "peer", pub, "allowed-ips", allowedRuntime)
+    if out, err := cmd.CombinedOutput(); err != nil {
+        logError(fmt.Sprintf("update-client-address: wg set failed: %v out=%s", err, string(out)))
+        return Response{
+            OK:      false,
+            Error:   "wg_set_failed",
+            Message: "Failed to update allowed-ips for peer on interface " + wgInterface,
+        }
+    }
+    logInfo(fmt.Sprintf("update-client-address: runtime-updated %s allowed-ips=%s", pub, allowedRuntime))
 
-	// 1) runtime/conf: só o /32 do cliente
-	cmd := exec.Command("wg", "set", wgInterface, "peer", pub, "allowed-ips", allowedRuntime)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		logError(fmt.Sprintf("update-client-address: wg set failed: %v out=%s", err, string(out)))
-		return Response{
-			OK:      false,
-			Error:   "wg_set_failed",
-			Message: "Failed to update allowed-ips for peer on interface " + wgInterface,
-		}
-	}
-	logInfo(fmt.Sprintf("update-client-address: runtime-updated %s allowed-ips=%s", pub, allowedRuntime))
+    // 2) conf: também só o /32 do cliente
+    if err := setAllowedIPsWindow(pub, allowedRuntime); err != nil {
+        logError(fmt.Sprintf("update-client-address: conf-setAllowedIPsWindow %s err=%v", pub, err))
+        // segue ok, runtime já está certo
+    }
 
-	// 2) conf: também só o /32 do cliente
-	if err := setAllowedIPsWindow(pub, allowedRuntime); err != nil {
-		logError(fmt.Sprintf("update-client-address: conf-setAllowedIPsWindow %s err=%v", pub, err))
-	}
+    // 3) JSON de retorno pro PHP/Mikrotik (opcionalmente com o duplo)
+    serverIPv4 := getServerIPv4FromConf()
+    allowedJson := clientAddr
+    if serverIPv4 != "" {
+        allowedJson = serverIPv4 + "/32," + clientAddr
+    }
 
-	// 3) JSON de retorno pro PHP/Mikrotik (reconstrói com o duplo para o PHP salvar)
-	serverIPv4 := getServerIPv4FromConf()
-	allowedJson := allowedRuntime
-	if serverIPv4 != "" {
-		allowedJson = serverIPv4 + "/32," + allowedRuntime
-	}
-
-	return Response{
-		OK: true,
-		Data: map[string]string{
-			"publicKey":  pub,
-			"allowedIPs": allowedJson, // aqui vai o duplo pro PHP gravar e enviar pro .rsc
-		},
-	}
+    return Response{
+        OK: true,
+        Data: map[string]string{
+            "publicKey":  pub,
+            "allowedIPs": allowedJson, // aqui vai o duplo pro PHP gravar
+        },
+    }
 }
-
 // ----------------------------------------------------------------------------
 // WireGuard helpers (exec wg / ip / hostname)
 // ----------------------------------------------------------------------------
+// BLINDAGEM NÍVEL 2: Sanitiza o IP do servidor da lista de AllowedIPs
+// ----------------------------------------------------------------------------
+func sanitizeAllowedIPs(rawIPs string, serverIPv4 string) string {
+	if serverIPv4 == "" || rawIPs == "" {
+		return rawIPs // Nada para limpar
+	}
+
+	// Cria o padrão que queremos arrancar (ex: "10.66.66.1/32")
+	serverCIDR := serverIPv4 + "/32"
+	
+	parts := strings.Split(rawIPs, ",")
+	var cleanIPs []string
+
+	for _, p := range parts {
+		ip := strings.TrimSpace(p)
+		if ip == "" {
+			continue
+		}
+		// Se o IP da lista for igual ao IP do servidor/32, NÓS IGNORAMOS (arranca fora)
+		if ip == serverCIDR || ip == serverIPv4 {
+			logInfo(fmt.Sprintf("Blindagem: Removendo IP do servidor (%s) dos AllowedIPs", ip))
+			continue
+		}
+		// Se não for o servidor, é o cliente, então guarda
+		cleanIPs = append(cleanIPs, ip)
+	}
+
+	return strings.Join(cleanIPs, ",")
+}
 
 func readWgAddressFromConf() string {
-	b, err := os.ReadFile(wgConfPath)
-	if err != nil {
-		return ""
-	}
-	lines := strings.Split(string(b), "\n")
-	for _, line := range lines {
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "Address") {
-			parts := strings.SplitN(t, "=", 2)
-			if len(parts) == 2 {
-				return strings.TrimSpace(parts[1])
-			}
-		}
-	}
-	return ""
+    b, err := os.ReadFile(wgConfPath)
+    if err != nil {
+        return ""
+    }
+    lines := strings.Split(string(b), "\n")
+    for _, line := range lines {
+        t := strings.TrimSpace(line)
+        if strings.HasPrefix(t, "Address") {
+            parts := strings.SplitN(t, "=", 2)
+            if len(parts) == 2 {
+                return strings.TrimSpace(parts[1])
+            }
+        }
+    }
+    return ""
 }
 
 func getServerIPv4FromConf() string {
-	addr := readWgAddressFromConf()
-	if addr == "" {
-		return ""
-	}
+    addr := readWgAddressFromConf()
+    if addr == "" {
+        return ""
+    }
 
-	// exemplo: "10.66.66.1/24,fd42:42:42::1/64"
-	parts := strings.Split(addr, ",")
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if strings.Contains(p, ":") {
-			continue // pula IPv6
-		}
-		hp := strings.SplitN(p, "/", 2)
-		return hp[0] // Retorna só o "10.66.66.1"
-	}
-	return ""
-}
-
-// BLINDAGEM NÍVEL 2: Remove o IP do servidor da string de AllowedIPs
-func sanitizeAllowedIPs(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	serverIP := getServerIPv4FromConf()
-	if serverIP == "" {
-		return raw // Se por milagre não achar o IP do server, retorna o que veio
-	}
-
-	parts := strings.Split(raw, ",")
-	var out []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		
-		// Pega só o IP, ignorando a máscara /32 ou /24
-		ipOnly := strings.SplitN(p, "/", 2)[0]
-		
-		// Se o IP do array for exatamente igual ao do servidor, arranca!
-		if ipOnly == serverIP {
-			logInfo("BLINDAGEM ATIVADA: removendo IP do servidor (" + p + ") do AllowedIPs do cliente")
-			continue
-		}
-		out = append(out, p)
-	}
-	return strings.Join(out, ",")
+    // exemplo: "10.66.66.1/24,fd42:42:42::1/64"
+    parts := strings.Split(addr, ",")
+    for _, p := range parts {
+        p = strings.TrimSpace(p)
+        if p == "" {
+            continue
+        }
+        if strings.Contains(p, ":") {
+            continue // pula IPv6
+        }
+        hp := strings.SplitN(p, "/", 2)
+        return hp[0] // "10.66.66.1"
+    }
+    return ""
 }
 
 func wgIsUp() bool {
@@ -1229,46 +1284,50 @@ func isValidPublicKey(pub string) bool {
 
 // Descobre IP+porta atuais do servidor para usar no Endpoint dos clients.
 func getCurrentEndpoint() string {
-	txt, err := wgShowText()
-	if err == nil {
-		if port := extractListeningPort(txt); port > 0 {
-			if host := firstHostIP(); host != "" {
-				return fmt.Sprintf("%s:%d", host, port)
-			}
-		}
-	}
+    // 1) tenta pegar porta real via wg show
+    txt, err := wgShowText()
+    if err == nil {
+        if port := extractListeningPort(txt); port > 0 {
+            if host := firstHostIP(); host != "" {
+                return fmt.Sprintf("%s:%d", host, port)
+            }
+        }
+    }
 
-	b, err := os.ReadFile(wgConfPath)
-	if err == nil {
-		lines := strings.Split(string(b), "\n")
-		var port int
-		for _, line := range lines {
-			t := strings.TrimSpace(line)
-			if strings.HasPrefix(t, "ListenPort") {
-				parts := strings.SplitN(t, "=", 2)
-				if len(parts) == 2 {
-					lp := strings.TrimSpace(parts[1])
-					if p, err := strconv.Atoi(lp); err == nil && p > 0 {
-						port = p
-						break
-					}
-				}
-			}
-		}
-		if port > 0 {
-			if host := firstHostIP(); host != "" {
-				return fmt.Sprintf("%s:%d", host, port)
-			}
-		}
-	}
+    // 2) fallback: tenta ler ListenPort direto do wg0.conf
+    b, err := os.ReadFile(wgConfPath)
+    if err == nil {
+        lines := strings.Split(string(b), "\n")
+        var port int
+        for _, line := range lines {
+            t := strings.TrimSpace(line)
+            if strings.HasPrefix(t, "ListenPort") {
+                parts := strings.SplitN(t, "=", 2)
+                if len(parts) == 2 {
+                    lp := strings.TrimSpace(parts[1])
+                    if p, err := strconv.Atoi(lp); err == nil && p > 0 {
+                        port = p
+                        break
+                    }
+                }
+            }
+        }
+        if port > 0 {
+            if host := firstHostIP(); host != "" {
+                return fmt.Sprintf("%s:%d", host, port)
+            }
+        }
+    }
 
-	host := firstHostIP()
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	return fmt.Sprintf("%s:%d", host, 51820)
+    // 3) último recurso: porta 51820 no primeiro IP encontrado
+    host := firstHostIP()
+    if host == "" {
+        host = "127.0.0.1"
+    }
+    return fmt.Sprintf("%s:%d", host, 51820)
 }
 
+// peers do runtime (equivalente a wg show wg0 dump | awk '{print $1}')
 func wgShowPeers() (map[string]bool, error) {
 	out, err := exec.Command("wg", "show", wgInterface, "dump").Output()
 	if err != nil {
@@ -1278,6 +1337,7 @@ func wgShowPeers() (map[string]bool, error) {
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	for i, line := range lines {
 		if i == 0 {
+			// primeira linha é interface
 			continue
 		}
 		fields := strings.Fields(line)
@@ -1289,6 +1349,7 @@ func wgShowPeers() (map[string]bool, error) {
 	return peers, nil
 }
 
+// wg set wg0 peer <pub> remove
 func wgSetPeerRemove(pub string) error {
 	cmd := exec.Command("wg", "set", wgInterface, "peer", pub, "remove")
 	cmd.Stdout = nil
@@ -1310,17 +1371,44 @@ func extractListeningPort(wgTxt string) int {
 }
 
 func firstHostIP() string {
-	out, err := exec.Command("hostname", "-I").CombinedOutput()
-	if err != nil {
-		return ""
+	// 1) Tenta IP público com redundância (curl nativo do sistema)
+	urls := []string{"ifconfig.me", "api.ipify.org", "icanhazip.com"}
+	for _, url := range urls {
+		out, err := exec.Command("curl", "-s", "-4", "-m", "3", url).CombinedOutput()
+		if err == nil {
+			ip := strings.TrimSpace(string(out))
+			if net.ParseIP(ip) != nil {
+				return ip // Achou um IP válido, retorna e sai do loop
+			}
+		}
 	}
-	parts := strings.Fields(string(out))
-	if len(parts) > 0 {
-		return parts[0]
+
+	// 2) Fallback: IP da placa principal (evita docker/wg0)
+	nic := firstHostNic()
+	if nic != "" {
+		cmd := fmt.Sprintf("ip -4 addr show %s | awk '/inet / {print $2}' | cut -d/ -f1 | head -n 1", nic)
+		outNic, errNic := exec.Command("sh", "-c", cmd).CombinedOutput()
+		if errNic == nil {
+			ipNic := strings.TrimSpace(string(outNic))
+			if ipNic != "" {
+				return ipNic
+			}
+		}
 	}
-	return ""
+
+	// 3) Último recurso: hostname -I antigo
+	outHost, errHost := exec.Command("hostname", "-I").CombinedOutput()
+	if errHost == nil {
+		parts := strings.Fields(string(outHost))
+		if len(parts) > 0 {
+			return parts[0]
+		}
+	}
+
+	return "127.0.0.1"
 }
 
+// tentativa simples de descobrir NIC pública (igual script do Gutierrez)
 func firstHostNic() string {
 	out, err := exec.Command("sh", "-c", "ip -4 route ls | awk '/default/ {for (i=1;i<=NF;i++) if ($i==\"dev\") print $(i+1)}' | head -1").CombinedOutput()
 	if err != nil {
@@ -1335,6 +1423,7 @@ func firstHostNic() string {
 }
 
 func buildServerConfFromDefaults(privKey, ipv4Cidr, ipv6Cidr string, port int, pubNIC string) string {
+	// monta Address: se tiver IPv6, usa; senão, só IPv4
 	addr := ipv4Cidr
 	if ipv6Cidr != "" {
 		addr = ipv4Cidr + "," + ipv6Cidr
@@ -1388,6 +1477,7 @@ func genPresharedKey() (string, error) {
 
 func appendClientToConf(name, pub, psk, allowed string) error {
 	if _, err := os.Stat(wgConfPath); err != nil {
+		// se não existir, não falha; só loga
 		logError("wg_conf_missing: " + wgConfPath)
 		return nil
 	}
@@ -1436,6 +1526,7 @@ func deletePeerFromConf(pub string) error {
 		return err
 	}
 
+	// achar linha "PublicKey = <pub>"
 	pkLine := -1
 	for i, line := range lines {
 		trim := strings.TrimSpace(line)
@@ -1449,11 +1540,13 @@ func deletePeerFromConf(pub string) error {
 		return nil
 	}
 
+	// start = pkLine - 2 (### Client + [Peer]), mínimo 0
 	start := pkLine - 2
 	if start < 0 {
 		start = 0
 	}
 
+	// end = linha anterior ao próximo "### Client" ou fim do arquivo
 	end := len(lines) - 1
 	for i := pkLine + 1; i < len(lines); i++ {
 		if strings.HasPrefix(lines[i], "### Client ") {
@@ -1479,6 +1572,10 @@ func deletePeerFromConf(pub string) error {
 	return nil
 }
 
+// setAllowedIPsWindow replica a lógica do awk com janela em torno do [Peer]:
+// - detecta [Peer] (inicia janela)
+// - se PublicKey dentro da janela == pub, marca match_peer
+// - dentro da janela do peer alvo, troca AllowedIPs = newIPs
 func setAllowedIPsWindow(pub, newIPs string) error {
 	if _, err := os.Stat(wgConfPath); err != nil {
 		if os.IsNotExist(err) {
@@ -1498,13 +1595,14 @@ func setAllowedIPsWindow(pub, newIPs string) error {
 	matchPeer := false
 	windowStart := -1
 	windowEnd := -1
-	const windowSize = 5
+	const windowSize = 5 // mesmo NR+5 do awk
 
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 
 		trim := strings.TrimSpace(line)
 
+		// início de [Peer]
 		if strings.HasPrefix(trim, "[Peer]") {
 			inPeer = true
 			matchPeer = false
@@ -1513,7 +1611,9 @@ func setAllowedIPsWindow(pub, newIPs string) error {
 			continue
 		}
 
+		// PublicKey dentro da janela
 		if inPeer && strings.HasPrefix(trim, "PublicKey") {
+			// extrai valor
 			val := trim
 			val = strings.TrimPrefix(val, "PublicKey")
 			val = strings.TrimLeft(val, " \t=")
@@ -1525,6 +1625,7 @@ func setAllowedIPsWindow(pub, newIPs string) error {
 			continue
 		}
 
+		// Dentro da janela do peer alvo, troca AllowedIPs
 		if inPeer && matchPeer && i >= windowStart && i <= windowEnd && strings.HasPrefix(trim, "AllowedIPs") {
 			if newIPs == "" {
 				lines[i] = "AllowedIPs ="
@@ -1534,6 +1635,7 @@ func setAllowedIPsWindow(pub, newIPs string) error {
 			continue
 		}
 
+		// Saiu da janela, limpa flags
 		if windowEnd >= 0 && i > windowEnd {
 			inPeer = false
 			matchPeer = false
@@ -1552,6 +1654,7 @@ func setAllowedIPsWindow(pub, newIPs string) error {
 	return nil
 }
 
+// setPresharedKeyWindow: mesma janela, mas trocando PresharedKey
 func setPresharedKeyWindow(pub, newPSK string) error {
 	if _, err := os.Stat(wgConfPath); err != nil {
 		if os.IsNotExist(err) {
@@ -1577,6 +1680,7 @@ func setPresharedKeyWindow(pub, newPSK string) error {
 		line := lines[i]
 		trim := strings.TrimSpace(line)
 
+		// início de [Peer]
 		if strings.HasPrefix(trim, "[Peer]") {
 			inPeer = true
 			matchPeer = false
@@ -1585,6 +1689,7 @@ func setPresharedKeyWindow(pub, newPSK string) error {
 			continue
 		}
 
+		// PublicKey dentro da janela
 		if inPeer && strings.HasPrefix(trim, "PublicKey") {
 			val := trim
 			val = strings.TrimPrefix(val, "PublicKey")
@@ -1597,6 +1702,7 @@ func setPresharedKeyWindow(pub, newPSK string) error {
 			continue
 		}
 
+		// Dentro da janela do peer alvo, troca PresharedKey
 		if inPeer && matchPeer && i >= windowStart && i <= windowEnd && strings.HasPrefix(trim, "PresharedKey") {
 			lines[i] = fmt.Sprintf("PresharedKey = %s", newPSK)
 			continue
@@ -1638,6 +1744,7 @@ func logLine(level, msg string) {
 
 	f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
 	if err != nil {
+		// last resort
 		fmt.Fprintf(os.Stderr, "log open: %v\n", err)
 		return
 	}
