@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	daemonVersion = "v1.0.2"
+	daemonVersion = "v1.0.3"
 	socketPath   = "/run/wgmkauth.sock"
 	wgInterface  = "wg0"
 	wgConfPath   = "/etc/wireguard/" + wgInterface + ".conf"
@@ -1625,11 +1625,13 @@ func setAllowedIPsWindow(pub, newIPs string) error {
 			continue
 		}
 
-		// Dentro da janela do peer alvo, troca AllowedIPs
-		if inPeer && matchPeer && i >= windowStart && i <= windowEnd && strings.HasPrefix(trim, "AllowedIPs") {
+		// Dentro da janela do peer alvo, troca AllowedIPs (Buscando também os comentados)
+		if inPeer && matchPeer && i >= windowStart && i <= windowEnd && (strings.HasPrefix(trim, "AllowedIPs") || strings.HasPrefix(trim, "#AllowedIPs")) {
 			if newIPs == "" {
-				lines[i] = "AllowedIPs ="
+				// Se for desabilitar, comenta a linha pro wg-quick não dar Syntax Error!
+				lines[i] = "#AllowedIPs = disabled" 
 			} else {
+				// Se for habilitar, escreve o IP normalmente e tira o comentário
 				lines[i] = fmt.Sprintf("AllowedIPs = %s", newIPs)
 			}
 			continue
