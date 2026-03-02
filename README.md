@@ -95,7 +95,13 @@ echo '{"action":"ping"}' | socat - UNIX-CONNECT:/run/wgmkauth.sock
   "applyRuntime":        true,
   "wgPort":              51820,
   "wgIPv4":              "10.66.66.1/24",
-  "conf":                "conteúdo completo do wg0.conf (restore)"
+  "conf":                "conteúdo completo do wg0.conf (restore)",
+  "endpoint":            "IP/Domínio e porta do servidor (opcional)",
+  "ips":                 ["192.168.88.1", "10.0.0.1"],
+  "port":                22,
+  "user":                "mkauth",
+  "pass":                "senha_do_mkauth (opcional/plano B)",
+  "script":              "/ip address add address=..."
 }
 ```
 
@@ -132,6 +138,13 @@ echo '{"action":"ping"}' | socat - UNIX-CONNECT:/run/wgmkauth.sock
 | `enable-client` | Reativa peer (restaura AllowedIPs) | `publicKey`, `allowedIPs` | `presharedKey` |
 | `disable-client` | Desabilita peer (zera AllowedIPs) | `publicKey` | — |
 | `update-client-address` | Atualiza o IP/AllowedIPs de um peer | `publicKey`, `allowedIPs` | — |
+
+### Provisionamento / Mikrotik (OTP e SSH)
+
+| Action | Descrição | Campos obrigatórios | Campos opcionais |
+|---|---|---|---|
+| `testar-ssh` | Testa conexão SSH via Chave do Root (Plano A) ou Senha (Plano B) | `ips` (Array) | `user`, `port`, `pass` |
+| `executar-otp` | Injeta script via SSH na RouterBoard | `ips` (Array), `script` | `user`, `port`, `pass` |
 
 ## Exemplos de Uso
 
@@ -420,6 +433,47 @@ echo '{
   }
 }
 ```
+---
+
+### testar-ssh
+
+```bash
+echo '{
+  "action": "testar-ssh",
+  "ips": ["192.168.88.1"],
+  "user": "mkauth",
+  "pass": "senha123",
+  "port": 22
+}' | socat - UNIX-CONNECT:/run/wgmkauth.sock
+
+{
+  "ok": true,
+  "data": {
+    "ip": "192.168.88.1",
+    "metodo": "Chave SSH (OTP Nativo)",
+    "user": "mkauth"
+  }
+}
+```
+## executar-otp
+```
+echo '{
+  "action": "executar-otp",
+  "ips": ["192.168.88.1"],
+  "user": "mkauth",
+  "script": "/system identity set name=Test",
+  "port": 22
+}' | socat - UNIX-CONNECT:/run/wgmkauth.sock
+
+{
+  "ok": true,
+  "data": {
+    "ip": "192.168.88.1",
+    "metodo": "Chave SSH",
+    "output": "..."
+  }
+}
+```
 
 > No runtime/conf grava só o `/32` do cliente. No JSON de retorno inclui `serverIP/32,clientIP/32` pro PHP.
 
@@ -452,7 +506,12 @@ echo '{
 | `missing_fields` | `enable-client`, `update-client-address` | Campos obrigatórios ausentes |
 | `missing_conf` | `restore-wg-conf` | Campo `conf` ausente |
 | `invalid_publicKey` | `delete-client`, `disable-client`, `enable-client`, `update-client-address` | PublicKey com formato inválido |
+| `missing_ips` | `testar-ssh` | Array de IPs não foi fornecido |
+| `ssh_failed` | `testar-ssh` | Falha ao conectar em todos os IPs tentados (retorna array de debug com o log do erro) |
+| `missing_data` | `executar-otp` | Campo `ips` vazio ou `script` ausente |
+| `otp_failed` | `executar-otp` | Falha ao injetar script SSH em todos os IPs tentados |
 
+---
 ## Compilação
 
 ```bash
