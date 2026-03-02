@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	daemonVersion = "v1.0.3"
+	daemonVersion = "v1.0.5"
 	socketPath   = "/run/wgmkauth.sock"
 	wgInterface  = "wg0"
 	wgConfPath   = "/etc/wireguard/" + wgInterface + ".conf"
@@ -46,6 +46,11 @@ type Request struct {
 	WGIPv4 				string `json:"wgIPv4,omitempty"`
 	Conf   				string `json:"conf,omitempty"`
 	Endpoint            string `json:"endpoint,omitempty"`
+	IPs                 []string `json:"ips,omitempty"`
+	Port                int      `json:"port,omitempty"`
+	User                string   `json:"user,omitempty"`
+	Pass                string   `json:"pass,omitempty"`
+	Script              string   `json:"script,omitempty"` // <-- NOVO CAMPO
 }
 
 type Response struct {
@@ -300,7 +305,11 @@ func dispatch(req Request) Response {
 	case "server-reset":
 		return handleServerReset(req)
 	case "restore-wg-conf":
-		return handleRestoreWgConf(req)	
+		return handleRestoreWgConf(req)
+	case "testar-ssh":
+		return handleTestSSH(req)
+	case "executar-otp":
+		return handleExecutarOTP(req)	
 	default:
 		return Response{OK: false, Error: "invalid_action", Message: "Unknown action: " + req.Action}
 	}
@@ -683,6 +692,212 @@ func handleServerCreate(req Request) Response {
 			"listenPort": port,
 			"publicKey":  pub,
 		},
+	}
+}
+// ----------------------------------------------------------------------------
+// Handler: testar-ssh (Validador OTP via Daemon Privilegiado)
+// ----------------------------------------------------------------------------
+func handleTestSSH(req Request) Response {
+	if len(req.IPs) == 0 {
+		return Response{
+			OK:      false,
+			Error:   "missing_ips",
+			Message: "Nenhum IP fornecido para teste",
+		}
+	}
+
+	user := req.User
+	if user == "" {
+		user = "mkauth"
+	}
+	
+	port := req.Port
+	if port <= 0 {
+		port = 22
+	}
+
+	var debugLog []string
+
+	for _, ip := range req.IPs {
+		// ==========================================
+		// 1º TENTATIVA: CHAVE SSH PRIVADA DO ROOT (/root/.ssh/id_rsa)
+		// ==========================================
+		argsKey := []string{
+			"5",
+			"/usr/bin/ssh",
+			"-i", "/root/.ssh/id_rsa",
+			"-o", "PreferredAuthentications=publickey",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "BatchMode=yes",
+			"-o", "ConnectTimeout=3",
+			"-p", strconv.Itoa(port),
+			fmt.Sprintf("%s@%s", user, ip),
+			"/system identity print", // No Go, mandamos o comando sem aspas simples!
+		}
+
+		cmdKey := exec.Command("/usr/bin/timeout", argsKey...)
+		outKey, errKey := cmdKey.CombinedOutput()
+
+		if errKey == nil {
+			logInfo(fmt.Sprintf("testar-ssh: Sucesso com CHAVE no IP %s", ip))
+			return Response{
+				OK: true,
+				Data: map[string]interface{}{
+					"ip":     ip,
+					"metodo": "Chave SSH (OTP Nativo)",
+					"user":   user,
+				},
+			}
+		}
+		
+		debugLog = append(debugLog, fmt.Sprintf("[KEY] IP: %s | Erro: %v | Saída: %s", ip, errKey, strings.TrimSpace(string(outKey))))
+
+		// ==========================================
+		// 2º TENTATIVA: SENHA (PLANO B)
+		// ==========================================
+		if req.Pass != "" {
+			argsPass := []string{
+				"5",
+				"/usr/bin/sshpass",
+				"-p", req.Pass,
+				"/usr/bin/ssh",
+				"-o", "PreferredAuthentications=password,keyboard-interactive",
+				"-o", "PubkeyAuthentication=no",
+				"-o", "StrictHostKeyChecking=no",
+				"-o", "UserKnownHostsFile=/dev/null",
+				"-o", "ConnectTimeout=3",
+				"-p", strconv.Itoa(port),
+				fmt.Sprintf("%s@%s", user, ip),
+				"/system identity print",
+			}
+
+			cmdPass := exec.Command("/usr/bin/timeout", argsPass...)
+			outPass, errPass := cmdPass.CombinedOutput()
+
+			if errPass == nil {
+				logInfo(fmt.Sprintf("testar-ssh: Sucesso com SENHA no IP %s", ip))
+				return Response{
+					OK: true,
+					Data: map[string]interface{}{
+						"ip":     ip,
+						"metodo": "Senha",
+						"user":   user,
+					},
+				}
+			}
+			
+			debugLog = append(debugLog, fmt.Sprintf("[PASS] IP: %s | Erro: %v | Saída: %s", ip, errPass, strings.TrimSpace(string(outPass))))
+		}
+	}
+
+	logError(fmt.Sprintf("testar-ssh: Falha total para o usuário '%s' nos IPs: %v", user, req.IPs))
+	
+	return Response{
+		OK:      false,
+		Error:   "ssh_failed",
+		Message: fmt.Sprintf("Falha! O usuário '%s' não conectou.", user),
+		Data: map[string]interface{}{
+			"debug": debugLog,
+		},
+	}
+}
+// ----------------------------------------------------------------------------
+// Handler: executar-otp (Provisionamento da RB via SSH)
+// ----------------------------------------------------------------------------
+func handleExecutarOTP(req Request) Response {
+	if len(req.IPs) == 0 || req.Script == "" {
+		return Response{
+			OK:      false,
+			Error:   "missing_data",
+			Message: "IP ou Script não fornecidos",
+		}
+	}
+
+	user := req.User
+	if user == "" { user = "mkauth" }
+	port := req.Port
+	if port <= 0 { port = 22 }
+
+	var debugLog []string
+
+	for _, ip := range req.IPs {
+		// ==========================================
+		// 1º TENTATIVA: CHAVE SSH PRIVADA DO ROOT
+		// ==========================================
+		argsKey := []string{
+			"15", // Timeout de 15s para dar tempo do script rodar
+			"/usr/bin/ssh",
+			"-i", "/root/.ssh/id_rsa",
+			"-o", "PreferredAuthentications=publickey",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "BatchMode=yes",
+			"-o", "ConnectTimeout=5",
+			"-p", strconv.Itoa(port),
+			fmt.Sprintf("%s@%s", user, ip),
+		}
+
+		cmdKey := exec.Command("/usr/bin/timeout", argsKey...)
+		cmdKey.Stdin = strings.NewReader(req.Script)
+		outKey, errKey := cmdKey.CombinedOutput()
+
+		if errKey == nil {
+			logInfo(fmt.Sprintf("executar-otp: Sucesso com CHAVE no IP %s", ip))
+			return Response{
+				OK: true,
+				Data: map[string]interface{}{
+					"ip":     ip,
+					"metodo": "Chave SSH",
+					"output": string(outKey),
+				},
+			}
+		}
+		debugLog = append(debugLog, fmt.Sprintf("[KEY] IP: %s | Erro: %v | Saída: %s", ip, errKey, strings.TrimSpace(string(outKey))))
+
+		// ==========================================
+		// 2º TENTATIVA: SENHA (PLANO B)
+		// ==========================================
+		if req.Pass != "" {
+			argsPass := []string{
+				"15",
+				"/usr/bin/sshpass",
+				"-p", req.Pass,
+				"/usr/bin/ssh",
+				"-o", "PreferredAuthentications=password,keyboard-interactive",
+				"-o", "PubkeyAuthentication=no",
+				"-o", "StrictHostKeyChecking=no",
+				"-o", "UserKnownHostsFile=/dev/null",
+				"-o", "ConnectTimeout=5",
+				"-p", strconv.Itoa(port),
+				fmt.Sprintf("%s@%s", user, ip),
+			}
+
+			cmdPass := exec.Command("/usr/bin/timeout", argsPass...)
+			cmdPass.Stdin = strings.NewReader(req.Script)
+			outPass, errPass := cmdPass.CombinedOutput()
+
+			if errPass == nil {
+				logInfo(fmt.Sprintf("executar-otp: Sucesso com SENHA no IP %s", ip))
+				return Response{
+					OK: true,
+					Data: map[string]interface{}{
+						"ip":     ip,
+						"metodo": "Senha",
+						"output": string(outPass),
+					},
+				}
+			}
+			debugLog = append(debugLog, fmt.Sprintf("[PASS] IP: %s | Erro: %v | Saída: %s", ip, errPass, strings.TrimSpace(string(outPass))))
+		}
+	}
+
+	logError(fmt.Sprintf("executar-otp: Falha total para o usuário '%s' nos IPs: %v", user, req.IPs))
+	return Response{
+		OK:      false,
+		Error:   "otp_failed",
+		Message: "Falha ao injetar script na RouterBoard.",
+		Data: map[string]interface{}{"debug": debugLog},
 	}
 }
 
