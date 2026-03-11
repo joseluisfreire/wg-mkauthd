@@ -1,6 +1,6 @@
 BINARY   = wg-mkauthd
 VERSION  = $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-LDFLAGS  = -s -w -X main.Version=$(VERSION)
+LDFLAGS  = -s -w -X main.Version=$(VERSION) -extldflags '-static'
 GOFLAGS  = CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 
 .PHONY: all build clean
@@ -8,7 +8,8 @@ GOFLAGS  = CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 all: build
 
 build:
-$(GOFLAGS) go build -ldflags "$(LDFLAGS)" -trimpath -o $(BINARY) .
+	$(GOFLAGS) go build -ldflags "$(LDFLAGS)" -trimpath -o $(BINARY) .
 
 clean:
-rm -f $(BINARY)
+	rm -f $(BINARY)
+

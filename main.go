@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	daemonVersion = "v1.0.5"
+	daemonVersion = "v1.0.7"
 	socketPath   = "/run/wgmkauth.sock"
 	wgInterface  = "wg0"
 	wgConfPath   = "/etc/wireguard/" + wgInterface + ".conf"
@@ -77,6 +77,7 @@ type ServerConfigData struct {
 	HasPostUp   bool   `json:"hasPostUp"`
 	HasPostDown bool   `json:"hasPostDown"`
 	RawText     string `json:"rawText"`
+	RuntimeText string `json:"runtimeText,omitempty"`
 }
 
 type Client struct {
@@ -485,6 +486,23 @@ func handleServerGetConfig() Response {
 		}
 	}
 
+	// NOVO: Captura o runtime do kernel COM CORES FORÇADAS!
+	var runtime string
+	if wgIsUp() {
+		cmdColor := exec.Command("wg", "show", wgInterface)
+		// Força o utilitário wg a cuspir os códigos de cor do terminal
+		cmdColor.Env = append(os.Environ(), "WG_COLOR_MODE=always")
+		outColor, errShow := cmdColor.CombinedOutput()
+		
+		if errShow != nil {
+			runtime = "Erro ao executar wg show: " + errShow.Error()
+		} else {
+			runtime = string(outColor)
+		}
+	} else {
+		runtime = "Interface " + wgInterface + " está offline (down) no kernel."
+	}
+
 	data := ServerConfigData{
 		Interface:   wgInterface,
 		Address:     address,
@@ -493,23 +511,27 @@ func handleServerGetConfig() Response {
 		HasPostUp:   hasPostUp,
 		HasPostDown: hasPostDown,
 		RawText:     string(b),
+		RuntimeText: runtime, // Agora o texto vem cheio de caracteres ANSI ocultos!
 	}
 	return Response{OK: true, Data: data}
 }
 
 func handleServerReset(req Request) Response {
-	// derruba interface antes de mexer no conf
-	if wgIsUp() {
-		cmd := exec.Command("wg-quick", "down", wgInterface)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			logError(fmt.Sprintf("server-reset wg-quick down failed: %v out=%s", err, string(out)))
-			return Response{
-				OK:      false,
-				Error:   "wg_quick_down_failed",
-				Message: "Failed to bring interface down before reset",
-			}
-		}
-	}
+    if wgIsUp() {
+        cmd := exec.Command("wg-quick", "down", wgInterface)
+        if out, err := cmd.CombinedOutput(); err != nil {
+            // ✅ mesmo padrão do restore: fallback via ip link delete
+            logError(fmt.Sprintf("server-reset: wg-quick down failed (%v out=%s), tentando ip link delete", err, string(out)))
+            
+            cmdFb := exec.Command("ip", "link", "delete", wgInterface)
+            if outFb, errFb := cmdFb.CombinedOutput(); errFb != nil {
+                logError(fmt.Sprintf("server-reset: ip link delete também falhou: %v out=%s", errFb, string(outFb)))
+                // segue — o conf novo vai ser escrito e o up vai recriar
+            } else {
+                logInfo("server-reset: interface derrubada via ip link delete")
+            }
+        }
+    }
 
 	// tenta reaproveitar porta atual, se possível
 	currentPort := 0
@@ -595,52 +617,42 @@ func handleServerReset(req Request) Response {
 func handleRestoreWgConf(req Request) Response {
     conf := strings.TrimSpace(req.Conf)
     if conf == "" {
-        return Response{
-            OK:      false,
-            Error:   "missing_conf",
-            Message: "Field 'conf' is required for restore-wg-conf",
-        }
+        return Response{OK: false, Error: "missing_conf", Message: "Field 'conf' is required"}
     }
 
-    // 1. Derruba a interface (se estiver up)
+    // 1. Derruba a interface
     if wgIsUp() {
         cmd := exec.Command("wg-quick", "down", wgInterface)
         if out, err := cmd.CombinedOutput(); err != nil {
-            logError(fmt.Sprintf("restore-wg-conf: wg-quick down failed: %v out=%s", err, string(out)))
-            return Response{
-                OK:      false,
-                Error:   "wg_quick_down_failed",
-                Message: "Failed to bring interface down before restore",
+            // wg-quick down falhou (ex: .conf sumiu mas interface ainda está no kernel)
+            // Fallback: derruba na força via ip link
+            logError(fmt.Sprintf("restore-wg-conf: wg-quick down failed (%v out=%s), tentando ip link delete", err, string(out)))
+            
+            cmdFallback := exec.Command("ip", "link", "delete", wgInterface)
+            if outFb, errFb := cmdFallback.CombinedOutput(); errFb != nil {
+                logError(fmt.Sprintf("restore-wg-conf: ip link delete também falhou: %v out=%s", errFb, string(outFb)))
+                // Segue mesmo assim — o WriteFile vai sobrescrever o conf
+                // e o wg-quick up vai recriar a interface
+            } else {
+                logInfo("restore-wg-conf: interface derrubada via ip link delete")
             }
         }
     }
 
     // 2. Escreve o conf
     if err := os.WriteFile(wgConfPath, []byte(conf), 0o600); err != nil {
-        logError("restore-wg-conf: write failed: " + err.Error())
-        return Response{
-            OK:      false,
-            Error:   "conf_write_failed",
-            Message: "Failed to write wg0.conf: " + err.Error(),
-        }
+        return Response{OK: false, Error: "conf_write_failed", Message: err.Error()}
     }
 
-    // 3. Sobe a interface
+    // 3. Sobe
     cmdUp := exec.Command("wg-quick", "up", wgInterface)
     if out, err := cmdUp.CombinedOutput(); err != nil {
         logError(fmt.Sprintf("restore-wg-conf: wg-quick up failed: %v out=%s", err, string(out)))
-        return Response{
-            OK:      false,
-            Error:   "wg_quick_up_failed",
-            Message: "Failed to bring interface up after restore: " + string(out),
-        }
+        return Response{OK: false, Error: "wg_quick_up_failed", Message: string(out)}
     }
 
     logInfo("restore-wg-conf: wg0.conf restored and interface up")
-    return Response{
-        OK:      true,
-        Message: "wg0.conf restored successfully, interface is up",
-    }
+    return Response{OK: true, Message: "wg0.conf restored successfully, interface is up"}
 }
 
 func handleServerCreate(req Request) Response {
