@@ -125,7 +125,7 @@ echo '{"action":"ping"}' | socat - UNIX-CONNECT:/run/wgmkauth.sock
 | `server-reset` | Derruba, recria `wg0.conf` com nova keypair, sobe | — | `wgPort`, `wgIPv4`, `address` |
 | `server-up` | `wg-quick up wg0` | — | — |
 | `server-down` | `wg-quick down wg0` | — | — |
-| `server-get-config` | Retorna conteúdo parseado do `wg0.conf` | — | — |
+| `server-get-config` | Retorna conteúdo parseado do `wg0.conf` e o status real da interface direto do kernel (wg show dump) parseado em formato JSON| — | — |
 | `restore-wg-conf` | Substitui `wg0.conf` inteiro e reinicia interface | `conf` | — |
 
 ### Clientes (Peers)
