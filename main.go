@@ -17,8 +17,9 @@ import (
 	"time"
 )
 
+var daemonVersion = "dev"
+
 const (
-	daemonVersion = "v1.0.7"
 	socketPath   = "/run/wgmkauth.sock"
 	wgInterface  = "wg0"
 	wgConfPath   = "/etc/wireguard/" + wgInterface + ".conf"
@@ -50,7 +51,10 @@ type Request struct {
 	Port                int      `json:"port,omitempty"`
 	User                string   `json:"user,omitempty"`
 	Pass                string   `json:"pass,omitempty"`
-	Script              string   `json:"script,omitempty"` // <-- NOVO CAMPO
+	Script              string   `json:"script,omitempty"`
+	TargetIP            string   `json:"target_ip,omitempty"`
+	OldWGIp             string   `json:"old_wg_ip,omitempty"`
+	NewWGIp             string   `json:"new_wg_ip,omitempty"`
 }
 
 type Response struct {
@@ -310,7 +314,9 @@ func dispatch(req Request) Response {
 	case "testar-ssh":
 		return handleTestSSH(req)
 	case "executar-otp":
-		return handleExecutarOTP(req)	
+		return handleExecutarOTP(req)
+	case "update-mikrotik-wg-ip":
+		return handleUpdateMikrotikWgIP(req)
 	default:
 		return Response{OK: false, Error: "invalid_action", Message: "Unknown action: " + req.Action}
 	}
@@ -910,6 +916,102 @@ func handleExecutarOTP(req Request) Response {
 		Error:   "otp_failed",
 		Message: "Falha ao injetar script na RouterBoard.",
 		Data: map[string]interface{}{"debug": debugLog},
+	}
+}
+// ----------------------------------------------------------------------------
+// Handler: update-mikrotik-wg-ip (Altera o IP da peer da RB com Scheduler)
+// ----------------------------------------------------------------------------
+func handleUpdateMikrotikWgIP(req Request) Response {
+	if req.TargetIP == "" || req.OldWGIp == "" || req.NewWGIp == "" {
+		return Response{
+			OK:      false,
+			Error:   "missing_data",
+			Message: "IP alvo, IP antigo e IP novo são obrigatórios",
+		}
+	}
+
+	user := req.User
+	if user == "" { user = "mkauth" }
+	port := req.Port
+	if port <= 0 { port = 22 }
+
+	oldIpHost := strings.Split(req.OldWGIp, "/")[0]
+	newIpHost := strings.Split(req.NewWGIp, "/")[0]
+
+	// Comando CHUMBADO e SEGURO do Scheduler
+	cmdMikrotik := fmt.Sprintf(`/system scheduler add name=wg_update start-time=startup interval=2s on-event="/ip address set [find address~\"^%s/\"] address=%s network=%s; /system scheduler remove wg_update;"`, oldIpHost, req.NewWGIp, newIpHost)
+
+	var debugLog []string
+
+	// ==========================================
+	// 1º TENTATIVA: CHAVE SSH PRIVADA DO ROOT
+	// ==========================================
+	argsKey := []string{
+		"5", // Timeout de 5s
+		"/usr/bin/ssh",
+		"-i", "/root/.ssh/id_rsa",
+		"-o", "PreferredAuthentications=publickey",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=3",
+		"-p", strconv.Itoa(port),
+		fmt.Sprintf("%s@%s", user, req.TargetIP),
+		cmdMikrotik,
+	}
+
+	cmdKey := exec.Command("/usr/bin/timeout", argsKey...)
+	outKey, errKey := cmdKey.CombinedOutput()
+
+	if errKey == nil {
+		logInfo(fmt.Sprintf("update-mikrotik-wg-ip: Sucesso com CHAVE no IP %s. Comando agendado.", req.TargetIP))
+		return Response{
+			OK:      true,
+			Message: fmt.Sprintf("IP alterado para %s com sucesso na RB %s (via Chave SSH)", req.NewWGIp, req.TargetIP),
+			Data:    map[string]interface{}{"metodo": "Chave SSH", "output": string(outKey)},
+		}
+	}
+	debugLog = append(debugLog, fmt.Sprintf("[KEY] IP: %s | Erro: %v | Saída: %s", req.TargetIP, errKey, strings.TrimSpace(string(outKey))))
+
+	// ==========================================
+	// 2º TENTATIVA: SENHA (PLANO B)
+	// ==========================================
+	if req.Pass != "" {
+		argsPass := []string{
+			"5",
+			"/usr/bin/sshpass", "-p", req.Pass,
+			"/usr/bin/ssh",
+			"-o", "PreferredAuthentications=password,keyboard-interactive",
+			"-o", "PubkeyAuthentication=no",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "ConnectTimeout=3",
+			"-p", strconv.Itoa(port),
+			fmt.Sprintf("%s@%s", user, req.TargetIP),
+			cmdMikrotik,
+		}
+
+		cmdPass := exec.Command("/usr/bin/timeout", argsPass...)
+		outPass, errPass := cmdPass.CombinedOutput()
+
+		if errPass == nil {
+			logInfo(fmt.Sprintf("update-mikrotik-wg-ip: Sucesso com SENHA no IP %s. Comando agendado.", req.TargetIP))
+			return Response{
+				OK:      true,
+				Message: fmt.Sprintf("IP alterado para %s com sucesso na RB %s (via Senha)", req.NewWGIp, req.TargetIP),
+				Data:    map[string]interface{}{"metodo": "Senha", "output": string(outPass)},
+			}
+		}
+		debugLog = append(debugLog, fmt.Sprintf("[PASS] IP: %s | Erro: %v | Saída: %s", req.TargetIP, errPass, strings.TrimSpace(string(outPass))))
+	}
+
+	logError(fmt.Sprintf("update-mikrotik-wg-ip: Falha total ao conectar na RB %s", req.TargetIP))
+	
+	return Response{
+		OK:      false,
+		Error:   "ssh_failed",
+		Message: "Falha de comunicação SSH com a RB.",
+		Data:    map[string]interface{}{"debug": debugLog},
 	}
 }
 
